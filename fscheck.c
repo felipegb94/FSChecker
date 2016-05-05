@@ -77,10 +77,68 @@ struct dirent {
   char name[DIRSIZ];
 };
 
-// int checkBlockAddr(uint blockAddr)
-// {
-//     if()
-// }
+#define DIRENTSIZE 16
+#define NUMDIRENTPERBLOCK (int) (BSIZE / DIRENTSIZE)
+
+
+
+int * blockNumToBitAddr(struct superblock *sb, int blockNum)
+{
+    int blockIndex = (blockNum - (sb->size - sb->nblocks));
+    uint * bitAddr = (uint *) (blockIndex + ((sb->ninodes / IPB) + 3) * BSIZE); 
+
+    return bitAddr;
+}
+
+/**
+* Input:    * Pointer to currDirectory
+*           * name to look for
+* Output: 
+*           * dirEntry is a copy of the directory entry we found (if found)
+* returns 1 if found 0 otherwise.
+*/
+int checkDirectoryForEntry(struct dirent * directory, char * name, struct dirent * dirEntry)
+{
+    int check = 0;
+    int i = 0;
+    for (i = 0; i < NUMDIRENTPERBLOCK; ++i){
+        if(strcmp(directory[i].name, name) == 0){
+            printf("We just found the dir entry %s\n", name);
+            strcpy(dirEntry->name, directory[i].name);
+            dirEntry->inum = directory[i].inum;
+            check = 1;
+            break;
+        }
+    }
+    return check;
+}
+
+int checkDirectoryForINum(struct dirent * directory, int inum, struct dirent * dirEntry)
+{
+    int check = 0;
+    int i = 0;
+    for (i = 0; i < NUMDIRENTPERBLOCK; ++i){
+        // printf("Checking for Inum for %d: [%d]\n", i, directory[i].inum);
+
+        if(directory[i].inum == inum){
+            printf("We just found the dir inum %d\n", (int) inum);
+            strcpy(dirEntry->name, directory[i].name);
+            dirEntry->inum = directory[i].inum;
+            check = 1;
+            break;
+        }
+    }
+    return check;
+}
+
+void checkDataBlockAddress(struct superblock *sb, uint addr)
+{
+    if(addr > sb->size || 
+       addr < (sb->size - sb->nblocks)){
+        fprintf(stderr, "%s\n", "bad address in inode.");
+        exit(1);
+    }
+}
 
 /**
  * File System checker. 
@@ -88,6 +146,9 @@ struct dirent {
 int main(int argc, char **argv)
 {
     printf("Executing fscheck...\n");
+    printf("size of int = %d...\n",(int) sizeof(int));
+    printf("size of uint = %d...\n",(int) sizeof(uint));
+    printf("size of short = %d...\n",(int) sizeof(short));
 
     char * imgPath;
     int fd;
@@ -113,13 +174,6 @@ int main(int argc, char **argv)
     }
     printf("Input Image Size = %zd \n", imgStat.st_size);
 
-    // int rc;
-    // char buf[BSIZE];
-    // rc = read(fd, buf, BSIZE);
-    // assert(rc  == BSIZE);
-    // rc = read(fd, buf, BSIZE);
-    // assert(rc  == BSIZE);
-
 
     img = mmap(NULL, imgStat.st_size, PROT_READ, MAP_PRIVATE, fd, 0); 
     if(img == MAP_FAILED){
@@ -129,13 +183,26 @@ int main(int argc, char **argv)
     sb = (struct superblock * )(img + BSIZE);
     printf("%d %d %d\n", sb->size, sb->nblocks, sb->ninodes );
     
-    int i;
+    int i, j, k, m;
     struct dinode * inode;
-    uint * dbAddr;
+    uint * dataBlockAddresses;
+    uint * indirectDataBlockAddresses;
+    struct dirent * currDirectory; // List of dirent
+    struct dirent currDirEntry;
+    struct dirent parentDirEntry;
+    struct dirent tmpEntry;
+    struct dirent * parentDirectory;
+    struct dinode * parentNode;
+    int dotCheck, dotdotCheck, parentDirCheck;
+    struct dinode ** inUseINodes = malloc(sb->ninodes * sizeof(struct dinode *));
+    int inUseCounter = 0;
+
     inode = (struct dinode *)(img + 2*BSIZE);
+
+    printf("Size of dirent %d, BSIZE/dirent = %d \n", (int) sizeof(struct dirent), (int) BSIZE/sizeof(struct dirent));
     for (i = 0; i < (int) sb->ninodes; ++i) {
         // printf("%d type: %d\n",i, inode->type);
-        //Get currDir
+        dataBlockAddresses = inode->addrs;
 
         // check1
         if(inode->type != T_UNALLOCATED && 
@@ -154,40 +221,34 @@ int main(int argc, char **argv)
            inode->type == T_DEV)
         {
             // printf("Check 2: Direct Blocks...\n");
-            dbAddr = inode->addrs;
-            uint j = 0;
-            for (j = 0; j < NDIRECT + 1; ++j)
+            for(j = 0; j < NDIRECT + 1; ++j)
             {
-                if(dbAddr[j] == 0){
+                if(dataBlockAddresses[j] == 0){
                     printf("j = %d %s\n",j, "unused data block");
                     break;
                 }
-                if(dbAddr[j] > sb->size || 
-                   dbAddr[j] < (sb->size - sb->nblocks)){
-                    fprintf(stderr, "%s\n", "bad address in inode.");
-                    exit(1);
+                checkDataBlockAddress(sb, dataBlockAddresses[j]);
+                if(j == NDIRECT){
+                    // printf("Check 2: InDirect Blocks...\n");
+                    indirectDataBlockAddresses = img + (dataBlockAddresses[NDIRECT] * BSIZE);
+                    for (k = 0; k < BSIZE / (sizeof(uint)); ++k){
+
+                        if(indirectDataBlockAddresses[k] == 0){
+                            printf("k = %d %s\n",k, "unused indirect data block");
+                            break;
+                        }
+                        checkDataBlockAddress(sb, indirectDataBlockAddresses[k]);
+                    }
                 }
             }
-            // printf("Check 2: InDirect Blocks...\n");
-            uint * indBAddr = img + (dbAddr[NDIRECT] * BSIZE);
-            for (j = 0; j < BSIZE / (sizeof(uint)); ++j)
-            {
-                if(indBAddr[j] == 0){
-                    printf("j = %d %s\n",j, "unused indirect data block");
-                    break;
-                }
-                if(indBAddr[j] > sb->size || 
-                   indBAddr[j] < (sb->size - sb->nblocks)){
-                    fprintf(stderr, "%s\n", "bad address in inode.");
-                    exit(1);
-                }
-            }
+            inUseINodes[inUseCounter] = inode; 
+            inUseCounter++;
+            //printf("inode %d in use, inUseCounter = %d\n",i,inUseCounter);
         }
 
         // check3 check for root directory
         if (i == ROOTINO)
         {
-            // printf("Check 3...\n");
             if(inode->type != T_DIR){
                 fprintf(stderr, "%s\n", "root directory does not exist.");
                 exit(1);
@@ -198,55 +259,22 @@ int main(int argc, char **argv)
         if (inode->type == T_DIR)
         {
             printf("Check 4...\n");
-            int dotCheck = 0;
-            int dotdotCheck = 0;
-            dbAddr = inode->addrs;
-            uint j = 0;
-            uint k = 0;
-            struct dirent * entry;
+            dotCheck = 0;
+            dotdotCheck = 0;
+            parentDirCheck = 0;
+            
             for (j = 0; j < NDIRECT + 1; ++j)
             {
-                if(dbAddr[j] == 0){
+                if(dataBlockAddresses[j] == 0){
                     printf("j = %d %s\n",j, "unused data block");
                     break;
                 }
-                entry = img + (dbAddr[j] * BSIZE);
-                for (k = 0; k < BSIZE / (sizeof(uint)); ++k){
-                    if(strcmp(entry[k].name, ".") == 0){
-                        dotCheck = 1;
-                    }
-                    //check5: check that parent dir
-                    if(strcmp(entry[k].name, "..") == 0){
-                        dotdotCheck = 1;
-                        int parentDirCheck = 0;
-                        
-                        struct dinode * parentNode = img + (entry[k].inum * BSIZE);
-                        struct dirent * parentDirEntry;
+                currDirectory = img + (dataBlockAddresses[j] * BSIZE);
 
-                        int l = 0;
-                        for (l = 0; l < NDIRECT; ++l){   
-                            parentDirEntry = img + (parentNode->addrs[l] * BSIZE);
-                            int m = 0;
+                dotCheck = checkDirectoryForEntry(currDirectory, ".", &currDirEntry);
+                // After this line dirEntry will contain the parent directory if it was found
+                dotdotCheck = checkDirectoryForEntry(currDirectory, "..", &parentDirEntry);
 
-                            for (m = 0; m < BSIZE / (sizeof(uint)); ++m){
-                                if(parentDirEntry[m].inum == i) {
-                                    parentDirCheck = 1;
-                                    break;
-                                }
-                            }
-                            if(parentDirCheck) {
-                                break;
-                            }
-                        }
-                        if(!parentDirCheck) {
-                            fprintf(stderr, "%s\n", "parent directory mismatch.");
-                            exit(1);
-                        } else {
-                            printf("hello im Blake in %i\n",i);
-                        }
-
-                    }
-                }
                 if(dotCheck && dotdotCheck){
                     break;
                 }
@@ -257,16 +285,54 @@ int main(int argc, char **argv)
                 exit(1);
             }
             else{
-                printf("hello im Felipe in %i\n",i);
+                printf("hello im Felipe in %i: we found . and .. for this DIR\n",i);
+            }
+
+            //check5
+            parentNode = (img + 2*BSIZE) + (parentDirEntry.inum * sizeof(struct dinode));
+
+            printf("parentDirEntry.name = %s, parentDirEntry.inum = %d\n",parentDirEntry.name,(int)parentDirEntry.inum);
+            printf("parentNode.type = %d\n",(int)parentNode->type);
+
+            for (k = 0; k < NDIRECT; ++k) // TODO ask TA about indirect (NDIRECT + 1)
+            {
+                // printf("Addr of %d: [%d]\n", k, parentNode->addrs[k]);
+                parentDirectory = img + (parentNode->addrs[k] * BSIZE);
+                parentDirCheck = checkDirectoryForINum(parentDirectory, i, &tmpEntry);
+                if(parentDirCheck){
+                    break;
+                }
+            }
+
+            if(!parentDirCheck) {
+                fprintf(stderr, "%s\n", "parent directory mismatch.");
+                exit(1);
+            } else {
+                printf("hello im Blake in %i\n",i);
             }
         }
 
         inode++;
     }
 
-    // check5: 
+    printf("Printing in use inodes\n");
+    int currBitAddress;
+    for(i = 0;i < inUseCounter;i++){
+        printf("i = %d, inode type = %d\n",i, inUseINodes[i]->type);
 
+        dataBlockAddresses = inUseINodes[i]->addrs;
 
+        //check6
+        for (j = 0; j < NDIRECT + 1; ++j){
+            if(dataBlockAddresses[j] == 0){
+                printf("j = %d %s\n",j, "unused data block");
+                break;
+            }
+            currBitAddress = blockNumToBitAddr(sb, dataBlockAddresses[j]);
+
+        }
+
+    }
 
 
     if(close(fd) < 0){

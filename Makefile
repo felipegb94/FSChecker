@@ -12,7 +12,7 @@ EXECUTABLES=$(PREFIX)
 
 all:
 	make $(EXECUTABLES)
-	./fscheck ../xv6/fs.img
+	./fscheck ../P5/xv6/fs.img
 
 # EXECUTABLES
 $(PREFIX): $(PREFIX).c
