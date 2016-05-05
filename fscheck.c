@@ -103,7 +103,7 @@ int checkDirectoryForEntry(struct dirent * directory, char * name, struct dirent
     int i = 0;
     for (i = 0; i < NUMDIRENTPERBLOCK; ++i){
         if(strcmp(directory[i].name, name) == 0){
-            printf("We just found the dir entry %s\n", name);
+            //printf("We just found the dir entry %s\n", name);
             strcpy(dirEntry->name, directory[i].name);
             dirEntry->inum = directory[i].inum;
             check = 1;
@@ -121,7 +121,7 @@ int checkDirectoryForINum(struct dirent * directory, int inum, struct dirent * d
         // printf("Checking for Inum for %d: [%d]\n", i, directory[i].inum);
 
         if(directory[i].inum == inum){
-            printf("We just found the dir inum %d\n", (int) inum);
+            //printf("We just found the dir inum %d\n", (int) inum);
             strcpy(dirEntry->name, directory[i].name);
             dirEntry->inum = directory[i].inum;
             check = 1;
@@ -138,6 +138,43 @@ void checkDataBlockAddress(struct superblock *sb, uint addr)
         fprintf(stderr, "%s\n", "bad address in inode.");
         exit(1);
     }
+}
+
+void checkRepeatedAddress(uint * addrs1, uint * addrs2, int sameList)
+{
+    int i,j;
+    uint currAddr1;
+    uint currAddr2;
+    int sameCounter = 0;
+    //printf("sameList = %d\n",sameList );
+    for (i = 0; i < NDIRECT; ++i)
+    {
+        currAddr1 = addrs1[i];
+        if(currAddr1 == 0){
+            break;
+        }
+        for (j = 0; j < NDIRECT; ++j)
+        {
+            if(currAddr2 == 0){
+                break;
+            }
+            currAddr2 = addrs2[j];
+            if(currAddr1 == currAddr2){
+                sameCounter++;
+            }
+        }
+    }
+    //printf("sameCounter = %d\n",sameCounter );
+
+    if(sameList && (sameCounter > NDIRECT)){
+        fprintf(stderr, "address used more than once.");
+        exit(1);
+    }
+    else if((sameCounter == 1) && !sameList){
+        fprintf(stderr, "address used more than once.");
+        exit(1);        
+    }
+    return;
 }
 
 /**
@@ -186,6 +223,7 @@ int main(int argc, char **argv)
     int i, j, k, m;
     struct dinode * inode;
     uint * dataBlockAddresses;
+    uint * dataBlockAddresses2;
     uint * indirectDataBlockAddresses;
     struct dirent * currDirectory; // List of dirent
     struct dirent currDirEntry;
@@ -195,7 +233,10 @@ int main(int argc, char **argv)
     struct dinode * parentNode;
     int dotCheck, dotdotCheck, parentDirCheck;
     struct dinode ** inUseINodes = malloc(sb->ninodes * sizeof(struct dinode *));
+    struct dinode ** directoryINodes = malloc(sb->ninodes * sizeof(struct dinode *));
+    int * inUseINodeNums = malloc(sb->ninodes * sizeof(int)); 
     int inUseCounter = 0;
+    int directoryCounter = 0;
 
     inode = (struct dinode *)(img + 2*BSIZE);
 
@@ -241,7 +282,8 @@ int main(int argc, char **argv)
                     }
                 }
             }
-            inUseINodes[inUseCounter] = inode; 
+            inUseINodes[inUseCounter] = inode;
+            inUseINodeNums[inUseCounter] = i;
             inUseCounter++;
             //printf("inode %d in use, inUseCounter = %d\n",i,inUseCounter);
         }
@@ -310,6 +352,9 @@ int main(int argc, char **argv)
             } else {
                 printf("hello im Blake in %i\n",i);
             }
+
+            directoryINodes[directoryCounter] = inode; 
+            directoryCounter++;
         }
 
         inode++;
@@ -317,22 +362,61 @@ int main(int argc, char **argv)
 
     printf("Printing in use inodes\n");
     int currBitAddress;
+    int currINum;
+    int iNumFound = 0;
+    uint * directoryAddresses;
     for(i = 0;i < inUseCounter;i++){
         printf("i = %d, inode type = %d\n",i, inUseINodes[i]->type);
 
         dataBlockAddresses = inUseINodes[i]->addrs;
+        currINum = inUseINodeNums[i];
+        iNumFound = 0;
 
         //check6
-        for (j = 0; j < NDIRECT + 1; ++j){
-            if(dataBlockAddresses[j] == 0){
-                printf("j = %d %s\n",j, "unused data block");
-                break;
-            }
-            currBitAddress = blockNumToBitAddr(sb, dataBlockAddresses[j]);
+        // for (j = 0; j < NDIRECT + 1; ++j){
+        //     if(dataBlockAddresses[j] == 0){
+        //         printf("j = %d %s\n",j, "unused data block");
+        //         break;
+        //     }
+        //     currBitAddress = blockNumToBitAddr(sb, dataBlockAddresses[j]);
+        // }
 
+        //check8: not checking  indirect addresses
+        for (j = 0; j < inUseCounter; ++j){
+            dataBlockAddresses2 = inUseINodes[j]->addrs;
+            if(i == j){
+                // set third argument to 1 if we are comparing the same list
+                checkRepeatedAddress(dataBlockAddresses, dataBlockAddresses2, 1);
+            }
+            else {
+                //set third argument to 0 if we are comparing different lists
+                checkRepeatedAddress(dataBlockAddresses, dataBlockAddresses2, 0);
+            }
+        }
+
+        //check9: check that inodes in use are referred to in at least one directory.
+        for (j = 0; j < directoryCounter; ++j)
+        {
+            directoryAddresses = directoryINodes[j]->addrs;
+            for(k = 0;k < NDIRECT;k++){
+
+                currDirectory = img + (directoryAddresses[k] * BSIZE);
+                
+                if(checkDirectoryForINum(currDirectory, currINum, &tmpEntry)) {
+                    iNumFound = 1;
+                    break;
+                }                   
+            }
+       
+        }
+        if(!iNumFound){
+            fprintf(stderr, "inode marked use but not found in a directory.\n");
+            exit(1);
         }
 
     }
+
+
 
 
     if(close(fd) < 0){
